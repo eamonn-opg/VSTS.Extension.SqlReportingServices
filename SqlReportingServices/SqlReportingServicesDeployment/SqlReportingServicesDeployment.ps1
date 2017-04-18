@@ -5,6 +5,7 @@ param(
 	[string]$DataSourceLocalPath,
 	[string]$DataSourceRootPath,
 	[string]$ConnectionString,
+	[string]$UpdateDataSource,
 
 	[string]$IncludeDataSet,
 	[string]$DataSetLocalPath,
@@ -111,14 +112,22 @@ param(
 	[System.Management.Automation.PSCredential]$auth = $null; #Auth incase there is one
 	if([System.String]::IsNullOrWhiteSpace($WsUsername) -or [System.String]::IsNullOrWhiteSpace($WsPassword)){  #If not use the DefaultCredential (PS session of the machine where this powershell script is executed
 		Write-Host "Creating WebService proxy using default credentials"; 
-		$ssrs =New-WebServiceProxy -Uri $WebserviceUrl -UseDefaultCredential -Namespace "SSRS" -ErrorAction Stop;
+		$ssrs =New-WebServiceProxy -Uri $WebserviceUrl -UseDefaultCredential -ErrorAction Stop;
 	}else{#Incase there is a Webservice user-password pair, use the PSCredential of that pair
 		Write-Host "Creating WebService proxy using credentials";
 		$wsSecurePass = ConvertTo-SecureString -String $WsPassword -AsPlainText -Force
 
 		$auth = New-Object System.Management.Automation.PSCredential -ArgumentList $WsUsername,$wsSecurePass;
-		$ssrs = New-WebServiceProxy -Uri $WebserviceUrl -Credential $auth -Namespace "SSRS" -ErrorAction Stop;
+		$ssrs = New-WebServiceProxy -Uri $WebserviceUrl -Credential $auth -ErrorAction Stop;
 	}
+
+    $type = $ssrs.GetType().Namespace;
+    $datatype = ($type + '.Property');
+
+    #display datatype, just for our reference
+    $datatype;
+    $type;
+
 
 ##########################################################
 #		           Uploading datasources                 #
@@ -134,7 +143,7 @@ param(
 			Verbose-WriteLine "Reading $datasourceName file...";
 			[xml]$rds = Get-Content -Path $_.FullName; #Read the RDS(XML) files
 			$connectionProperties = $rds.RptDataSource.ConnectionProperties;
-			$Definition = New-Object SSRS.DataSourceDefinition; 
+			$Definition = New-Object ($type + ".DataSourceDefinition"); 
 			if([string]::IsNullOrWhiteSpace($ConnectionString)){ #If there is no connectionstring specified, use the one in RDS
 				$Definition.ConnectString = $connectionProperties.ConnectString;
 			}else{
@@ -223,8 +232,8 @@ param(
 					$bts = Get-Content -Encoding Byte $_.FullName;
 					$fileName = [System.IO.Path]::GetFileNameWithoutExtension($_.FullName);
 					$warning =$null;
-					$props = New-Object "System.Collections.Generic.List[SSRS.Property]";
-					$mime = New-Object SSRS.Property;
+					$props = New-Object "System.Collections.Generic.List["$type + ".Property]";
+					$mime = New-Object ($type + ".Property");
 					$mime.Name = "MimeType";
 					$mime.Value = [System.Web.MimeMapping]::GetMimeMapping($_.FullName); #Set THe correct mimetype
 					$props.Add($mime);
@@ -280,35 +289,7 @@ param(
 			$null, #Additional properties to set
 			[ref]$warnings #Warnings associated to the upload
 		);
-		
-		if($IncludeDataSource -eq $true){ #Update the datasources
-            		$serverDataSources = $ssrs.ListChildren($DataSourceRootPath,$TRUE);
-            		$neededDataSources = $ssrs.GetItemDataSources($report.Path);
 
-            		$neededDataSources | ForEach-Object{
-                		$reportDataSourceName = $_.Name;
-                
-                		$serverDataSources | ForEach-Object{
-                    			$dataSourceName = $_.Name;
-
-                    			if($reportDataSourceName -eq $_.Name){
-                        			$dataSourcePathNew = $_.Path;
-                        			Verbose-WriteLine "Updating DataSource '$reportDataSourceName' to path '$dataSourcePathNew'";
-                        
-                        			$dataSourceReferenceNew = New-Object SSRS.DataSourceReference;
-                        			$dataSourceReferenceNew.Reference = $dataSourcePathNew;
-
-                        			$dataSourceNew = New-Object SSRS.DataSource;
-                        			$dataSourceNew.Name = $_.Name;
-                        			$dataSourceNew.Item = $dataSourceReferenceNew;
-
-                        			$ssrs.SetItemDataSources($report.Path,$dataSourceNew);
-                    			}
-                		}
-            		}
-        	}
-
-		
 		#If any warning was logged during upload, log them to the console
 		if($warnings -ne $null){
 			Write-Warning "One or more warnings occured during upload:";
@@ -319,6 +300,39 @@ param(
 			}
 			Write-Warning $warningSb.ToString();
 		}
+		
+		if($UpdateDataSource -eq $true){ #Update the datasources
+		    Write-Host "Updating the DataSources of the report $reportName...";
+			
+			$serverDataSources = $ssrs.ListChildren($DataSourceRootPath,$true);
+            $neededDataSources = $ssrs.GetItemDataSources($report.Path);
+			
+            $neededDataSources | ForEach-Object{
+                $reportDataSourceName = $_.Name;
+				Foreach($serverDataSource in $serverDataSources){
+					if([System.String]::Compare($serverDataSource.Name.Trim(),$reportDataSourceName.Trim(),$true) -eq 0){
+                        $dataSourcePathNew = $serverDataSource.Path;
+						
+                        Write-Host "Updating DataSource '$reportDataSourceName' to path '$dataSourcePathNew'..." -NoNewline;
+                        
+
+                        $dataSourceReferenceNew = New-Object($type + ".DataSourceReference");
+                        $dataSourceReferenceNew.Reference = $dataSourcePathNew;
+
+                        $dataSourceNew = New-Object ($type + ".DataSource");
+                        $dataSourceNew.Name =$reportDataSourceName;
+                        $dataSourceNew.Item = $dataSourceReferenceNew;
+						#[System.Collections.Generic.List[$type + ".DataSource"]]$arr = @($dataSourceNew);
+                        $ssrs.SetItemDataSources($report.Path,$dataSourceNew);
+						Write-Host "Done!";
+						break;
+                    }
+                }
+            }
+        }
+
+		
+
 		}catch [System.Exception]{
 			Write-Error $_.Exception.Message;
 			#Terminate script
